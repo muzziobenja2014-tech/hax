@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>HaxClone</title>
+<style>
+  body { margin:0; background:#1a2125; font-family:Arial,sans-serif; color:#fff; display:flex; flex-direction:column; align-items:center; }
+  #top { display:flex; gap:20px; align-items:center; margin:10px; font-size:22px; font-weight:bold; }
+  .red { color:#e56e56 } .blue { color:#5689e5 }
+  canvas { background:#3b4a32; border-radius:6px; }
+  #bar { margin:8px; display:flex; gap:6px; }
+  button { background:#244967; color:#fff; border:0; padding:7px 14px; border-radius:4px; cursor:pointer; font-weight:bold; }
+  button.r { background:#9b3e33 } button.b { background:#2e5a99 }
+  #chat { width:840px; height:110px; overflow-y:auto; background:#0f1417; padding:6px; box-sizing:border-box; font-size:13px; }
+  #msg { width:840px; padding:6px; box-sizing:border-box; background:#232c31; color:#fff; border:0; }
+  #login { position:fixed; inset:0; background:#1a2125; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; }
+  #login input { padding:10px; font-size:16px; border:0; border-radius:4px; }
+  #login h1 { font-size:42px; margin:0 0 10px; }
+  small { color:#8a9aa3 }
+</style>
+</head>
+<body>
+<div id="login">
+  <h1>Hax<span class="blue">Clone</span></h1>
+  <input id="nick" placeholder="Tu nombre" maxlength="16">
+  <button onclick="join()">Jugar</button>
+  <small>Flechas / WASD para moverte · X o Espacio para patear · Enter para chatear</small>
+</div>
+
+<div id="top"><span class="red" id="sr">0</span> - <span class="blue" id="sb">0</span></div>
+<canvas id="c" width="840" height="420"></canvas>
+<div id="bar">
+  <button class="r" onclick="team('red')">Rojo</button>
+  <button class="b" onclick="team('blue')">Azul</button>
+  <button onclick="team('spec')">Espectador</button>
+  <button onclick="send({t:'reset'})">Reiniciar</button>
+</div>
+<div id="chat"></div>
+<input id="msg" placeholder="Enter para chatear...">
+
+<script>
+const W = 370, H = 170, GOAL = 64, PR = 15, BR = 10;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+let ws, myId, state = null, prev = null, lastT = 0;
+const keys = {};
+
+function send(o) { ws && ws.readyState === 1 && ws.send(JSON.stringify(o)); }
+function team(t) { send({ t: 'team', team: t }); }
+
+function join() {
+  const name = document.getElementById('nick').value.trim() || 'Jugador';
+  ws = new WebSocket(proto + location.host);
+  ws.onopen = () => { send({ t: 'join', name }); document.getElementById('login').remove(); };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'id') myId = m.id;
+    else if (m.t === 's') { prev = state; state = m; lastT = performance.now();
+      document.getElementById('sr').textContent = m.s[0];
+      document.getElementById('sb').textContent = m.s[1]; }
+    else if (m.t === 'chat') addChat(m.n, m.m);
+  };
+  ws.onclose = () => addChat('•', 'Desconectado del servidor');
+}
+document.getElementById('nick').addEventListener('keydown', e => e.key === 'Enter' && join());
+
+function addChat(n, m) {
+  const c = document.getElementById('chat'), d = document.createElement('div');
+  d.innerHTML = `<b>${esc(n)}:</b> ${esc(m)}`; c.appendChild(d); c.scrollTop = c.scrollHeight;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+const msg = document.getElementById('msg');
+msg.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { if (msg.value.trim()) send({ t: 'chat', m: msg.value }); msg.value = ''; msg.blur(); }
+  e.stopPropagation();
+});
+
+function sendInput() {
+  send({ t: 'i', i: {
+    u: keys.ArrowUp || keys.KeyW, d: keys.ArrowDown || keys.KeyS,
+    l: keys.ArrowLeft || keys.KeyA, r: keys.ArrowRight || keys.KeyD,
+    k: keys.KeyX || keys.Space } });
+}
+addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.activeElement !== msg) { msg.focus(); return; }
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  if (!keys[e.code]) { keys[e.code] = true; sendInput(); }
+});
+addEventListener('keyup', e => { keys[e.code] = false; sendInput(); });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; sendInput(); });
+
+// ---- Dibujo ----
+const OX = cv.width / 2, OY = cv.height / 2;
+function drawField() {
+  ctx.fillStyle = '#718c5a'; ctx.fillRect(0, 0, cv.width, cv.height);
+  // franjas
+  for (let i = -W; i < W; i += 60) {
+    if (((i + W) / 60) % 2 === 0) { ctx.fillStyle = '#6a8454'; ctx.fillRect(OX + i, OY - H, 60, H * 2); }
+  }
+  ctx.strokeStyle = '#c7e6bd'; ctx.lineWidth = 3;
+  ctx.strokeRect(OX - W, OY - H, W * 2, H * 2);
+  ctx.beginPath(); ctx.moveTo(OX, OY - H); ctx.lineTo(OX, OY + H); ctx.stroke();
+  ctx.beginPath(); ctx.arc(OX, OY, 75, 0, Math.PI * 2); ctx.stroke();
+  // arcos (red)
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  [-1, 1].forEach(s => {
+    ctx.beginPath();
+    ctx.moveTo(OX + s * W, OY - GOAL); ctx.lineTo(OX + s * (W + 40), OY - GOAL);
+    ctx.lineTo(OX + s * (W + 40), OY + GOAL); ctx.lineTo(OX + s * W, OY + GOAL);
+    ctx.stroke();
+  });
+  // postes
+  [[-W,-GOAL,'#ffcccc'],[-W,GOAL,'#ffcccc'],[W,-GOAL,'#ccccff'],[W,GOAL,'#ccccff']].forEach(([x,y,c]) => circle(x, y, 8, c, '#000', 2));
+}
+function circle(x, y, r, fill, stroke, lw) {
+  ctx.beginPath(); ctx.arc(OX + x, OY + y, r, 0, Math.PI * 2);
+  ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = lw; ctx.strokeStyle = stroke; ctx.stroke();
+}
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function render() {
+  drawField();
+  if (state) {
+    const t = Math.min(1, (performance.now() - lastT) / (1000 / 60));
+    const pp = {}; if (prev) prev.p.forEach(p => pp[p[0]] = p);
+    for (const p of state.p) {
+      const o = pp[p[0]] || p;
+      const x = lerp(o[1], p[1], t), y = lerp(o[2], p[2], t);
+      circle(x, y, PR, p[3] === 'red' ? '#e56e56' : '#5689e5', p[5] ? '#fff' : '#000', 2);
+      if (p[0] === myId) { ctx.beginPath(); ctx.arc(OX + x, OY + y, PR + 25, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 2; ctx.stroke(); }
+      ctx.fillStyle = '#fff'; ctx.font = '11px Arial'; ctx.textAlign = 'center';
+      ctx.fillText(p[4], OX + x, OY + y + PR + 13);
+    }
+    const ob = prev ? prev.b : state.b;
+    circle(lerp(ob[0], state.b[0], t), lerp(ob[1], state.b[1], t), BR, '#fff', '#000', 2);
+    if (state.g) {
+      ctx.font = 'bold 60px Arial'; ctx.textAlign = 'center';
+      ctx.fillStyle = state.g === 'red' ? '#e56e56' : '#5689e5';
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 4;
+      const txt = state.g === 'red' ? '¡GOL ROJO!' : '¡GOL AZUL!';
+      ctx.strokeText(txt, OX, OY + 20); ctx.fillText(txt, OX, OY + 20);
+    }
+  }
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>
+
